@@ -24,10 +24,11 @@
 //! use bytecheck::CheckBytes;
 //!
 //! #[derive(CheckBytes, Debug)]
+//! #[repr(C)]
 //! struct Test {
 //!     a: u32,
-//!     b: bool,
-//!     c: char,
+//!     b: char,
+//!     c: bool,
 //! }
 //! #[repr(C, align(16))]
 //! struct Aligned<const N: usize>([u8; N]);
@@ -153,6 +154,7 @@ use core::{
     convert::{Infallible, TryFrom},
     fmt,
     marker::{PhantomData, PhantomPinned},
+    mem::ManuallyDrop,
     num::{
         NonZeroI128, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI8, NonZeroU128, NonZeroU16,
         NonZeroU32, NonZeroU64, NonZeroU8,
@@ -279,6 +281,16 @@ impl<C: ?Sized> CheckBytes<C> for PhantomPinned {
 
     #[inline]
     unsafe fn check_bytes<'a>(value: *const Self, _: &mut C) -> Result<&'a Self, Self::Error> {
+        Ok(&*value)
+    }
+}
+
+impl<C: ?Sized, T: CheckBytes<C> + ?Sized> CheckBytes<C> for ManuallyDrop<T> {
+    type Error = T::Error;
+
+    #[inline]
+    unsafe fn check_bytes<'a>(value: *const Self, c: &mut C) -> Result<&'a Self, Self::Error> {
+        let _ = T::check_bytes(value as *const T, c)?;
         Ok(&*value)
     }
 }
@@ -417,7 +429,7 @@ macro_rules! impl_tuple {
             #[allow(clippy::unneeded_wildcard_pattern)]
             unsafe fn check_bytes<'a>(value: *const Self, context: &mut C) -> Result<&'a Self, Self::Error> {
                 let field_bytes = ($(ptr::addr_of!((*value).$index),)+);
-                $($type::check_bytes(field_bytes.$index.cast::<$type>(), context).map_err($error::$type)?;)+
+                impl_tuple!(@check_fields field_bytes, $error, context, $($type $index,)*);
                 Ok(&*value)
             }
         }
@@ -426,7 +438,12 @@ macro_rules! impl_tuple {
             [$($error_rest,)*],
             [$($type $index,)+]
         }
-    }
+    };
+    (@check_fields $field_bytes:ident, $error:ident, $context:ident,) => {};
+    (@check_fields $field_bytes:ident, $error:ident, $context:ident, $type:ident $index:tt, $($type_rest:ident $index_rest:tt,)*) => {
+        impl_tuple!(@check_fields $field_bytes, $error, $context, $($type_rest $index_rest,)*);
+        $type::check_bytes($field_bytes.$index, $context).map_err($error::$type)?;
+    };
 }
 
 impl_tuple! {
